@@ -40,7 +40,7 @@ export const usePutObject = (
   });
 };
 
-const MULTIPART_CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB
+const MULTIPART_CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB
 
 export const useMultipartUpload = (
   bucket: string,
@@ -116,6 +116,7 @@ export const useMultipartUpload = (
 
       try {
         // 1. Create multipart upload
+        console.log("[multipart] Creating upload for", key, "size:", file.size);
         const createRes = await api.post(
           `/browse/${bucket}/multipart/create`,
           {
@@ -123,6 +124,7 @@ export const useMultipartUpload = (
           }
         );
         const uploadId = createRes.uploadId;
+        console.log("[multipart] Upload created, id:", uploadId);
 
         // 2. Upload parts
         const totalParts = Math.ceil(file.size / MULTIPART_CHUNK_SIZE);
@@ -146,10 +148,12 @@ export const useMultipartUpload = (
           const formData = new FormData();
           formData.append("file", chunk, fileName);
 
+          console.log(`[multipart] Uploading part ${i + 1}/${totalParts}, size: ${end - start}`);
           const partRes = await api.put(
             `/browse/${bucket}/multipart/upload?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${i + 1}`,
             { body: formData }
           );
+          console.log(`[multipart] Part ${i + 1} done, etag:`, partRes.etag);
 
           parts.push({ partNumber: i + 1, etag: partRes.etag });
           uploadedBytes += end - start;
@@ -164,6 +168,7 @@ export const useMultipartUpload = (
         updateProgress(fileName, { loaded: file.size, status: "completed" });
         options?.onSuccess?.();
       } catch (err) {
+        console.error("[multipart] Upload failed:", err);
         updateProgress(fileName, {
           status: "error",
           error: (err as Error).message,
