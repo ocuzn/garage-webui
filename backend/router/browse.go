@@ -214,6 +214,158 @@ func (b *Browse) PutObject(w http.ResponseWriter, r *http.Request) {
 	utils.ResponseSuccess(w, result)
 }
 
+func (b *Browse) CreateMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+
+	var body struct {
+		Key         string `json:"key"`
+		ContentType string `json:"contentType"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	result, err := client.CreateMultipartUpload(context.Background(), &s3.CreateMultipartUploadInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(body.Key),
+		ContentType: aws.String(body.ContentType),
+	})
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot create multipart upload: %w", err))
+		return
+	}
+
+	utils.ResponseSuccess(w, map[string]string{
+		"uploadId": *result.UploadId,
+		"key":      body.Key,
+	})
+}
+
+func (b *Browse) UploadPart(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+	key := r.URL.Query().Get("key")
+	uploadId := r.URL.Query().Get("uploadId")
+	partNumber, err := strconv.Atoi(r.URL.Query().Get("partNumber"))
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("invalid partNumber: %w", err))
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+	defer file.Close()
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	result, err := client.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:     aws.String(bucket),
+		Key:        aws.String(key),
+		UploadId:   aws.String(uploadId),
+		PartNumber: aws.Int32(int32(partNumber)),
+		Body:       file,
+	})
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot upload part: %w", err))
+		return
+	}
+
+	utils.ResponseSuccess(w, map[string]interface{}{
+		"etag":       *result.ETag,
+		"partNumber": partNumber,
+	})
+}
+
+func (b *Browse) CompleteMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+
+	var body struct {
+		Key      string `json:"key"`
+		UploadId string `json:"uploadId"`
+		Parts    []struct {
+			PartNumber int    `json:"partNumber"`
+			ETag       string `json:"etag"`
+		} `json:"parts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	completedParts := make([]types.CompletedPart, len(body.Parts))
+	for i, p := range body.Parts {
+		completedParts[i] = types.CompletedPart{
+			PartNumber: aws.Int32(int32(p.PartNumber)),
+			ETag:       aws.String(p.ETag),
+		}
+	}
+
+	result, err := client.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(bucket),
+		Key:      aws.String(body.Key),
+		UploadId: aws.String(body.UploadId),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot complete multipart upload: %w", err))
+		return
+	}
+
+	utils.ResponseSuccess(w, result)
+}
+
+func (b *Browse) AbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
+	bucket := r.PathValue("bucket")
+
+	var body struct {
+		Key      string `json:"key"`
+		UploadId string `json:"uploadId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	client, err := getS3Client(bucket)
+	if err != nil {
+		utils.ResponseError(w, err)
+		return
+	}
+
+	_, err = client.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(bucket),
+		Key:      aws.String(body.Key),
+		UploadId: aws.String(body.UploadId),
+	})
+	if err != nil {
+		utils.ResponseError(w, fmt.Errorf("cannot abort multipart upload: %w", err))
+		return
+	}
+
+	utils.ResponseSuccess(w, map[string]bool{"aborted": true})
+}
+
 func (b *Browse) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	bucket := r.PathValue("bucket")
 	key := r.PathValue("key")
