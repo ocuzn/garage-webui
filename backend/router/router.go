@@ -22,6 +22,12 @@ func HandleApiRouter() *http.ServeMux {
 	router.HandleFunc("GET /buckets", buckets.GetAll)
 
 	browse := &Browse{}
+	// Multipart routes must be registered before wildcard {key...} routes
+	router.HandleFunc("POST /browse/{bucket}/multipart/create", browse.CreateMultipartUpload)
+	router.HandleFunc("PUT /browse/{bucket}/multipart/upload", browse.UploadPart)
+	router.HandleFunc("POST /browse/{bucket}/multipart/complete", browse.CompleteMultipartUpload)
+	router.HandleFunc("POST /browse/{bucket}/multipart/abort", browse.AbortMultipartUpload)
+
 	router.HandleFunc("GET /browse/{bucket}", browse.GetObjects)
 	router.HandleFunc("GET /browse/{bucket}/{key...}", browse.GetOneObject)
 	router.HandleFunc("PUT /browse/{bucket}/{key...}", browse.PutObject)

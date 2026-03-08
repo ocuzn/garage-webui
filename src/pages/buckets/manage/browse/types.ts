@@ -22,3 +22,11 @@ export type PutObjectPayload = {
   key: string;
   file: File | null;
 };
+
+export type MultipartUploadProgress = {
+  fileName: string;
+  loaded: number;
+  total: number;
+  status: "uploading" | "completed" | "error";
+  error?: string;
+};
