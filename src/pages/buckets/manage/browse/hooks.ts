@@ -40,7 +40,7 @@ export const usePutObject = (
   });
 };
 
-const MULTIPART_CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB
+const MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 
