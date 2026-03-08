@@ -41,6 +41,28 @@ export const usePutObject = (
 };
 
 const MULTIPART_CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
+
+async function fetchWithRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = MAX_RETRIES,
+  label: string = ""
+): Promise<T> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      console.warn(
+        `[multipart] ${label} attempt ${attempt}/${retries} failed:`,
+        err
+      );
+      if (attempt === retries) throw err;
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+    }
+  }
+  throw new Error("unreachable");
+}
 
 export const useMultipartUpload = (
   bucket: string,
@@ -71,6 +93,9 @@ export const useMultipartUpload = (
   const uploadFile = useCallback(
     async (key: string, file: File) => {
       const fileName = file.name;
+      console.log(
+        `[multipart] Starting upload: ${fileName}, size: ${file.size}, chunk threshold: ${MULTIPART_CHUNK_SIZE}`
+      );
 
       // For small files, use simple upload
       if (file.size <= MULTIPART_CHUNK_SIZE) {
@@ -88,10 +113,15 @@ export const useMultipartUpload = (
         try {
           const formData = new FormData();
           formData.append("file", file);
-          await api.put(`/browse/${bucket}/${key}`, { body: formData });
+          await fetchWithRetry(
+            () => api.put(`/browse/${bucket}/${key}`, { body: formData }),
+            MAX_RETRIES,
+            `PUT ${fileName}`
+          );
           updateProgress(fileName, { loaded: file.size, status: "completed" });
           options?.onSuccess?.();
         } catch (err) {
+          console.error("[multipart] Simple upload failed:", err);
           updateProgress(fileName, {
             status: "error",
             error: (err as Error).message,
@@ -114,16 +144,23 @@ export const useMultipartUpload = (
       });
       abortControllers.current.set(fileName, false);
 
+      let uploadId: string | undefined;
+
       try {
         // 1. Create multipart upload
-        console.log("[multipart] Creating upload for", key, "size:", file.size);
-        const createRes = await api.post(
-          `/browse/${bucket}/multipart/create`,
-          {
-            body: { key, contentType: file.type || "application/octet-stream" },
-          }
+        console.log("[multipart] Creating upload for", key);
+        const createRes = await fetchWithRetry(
+          () =>
+            api.post(`/browse/${bucket}/multipart/create`, {
+              body: {
+                key,
+                contentType: file.type || "application/octet-stream",
+              },
+            }),
+          MAX_RETRIES,
+          "CreateMultipartUpload"
         );
-        const uploadId = createRes.uploadId;
+        uploadId = createRes.uploadId;
         console.log("[multipart] Upload created, id:", uploadId);
 
         // 2. Upload parts
@@ -132,7 +169,6 @@ export const useMultipartUpload = (
         let uploadedBytes = 0;
 
         for (let i = 0; i < totalParts; i++) {
-          // Check for abort
           if (abortControllers.current.get(fileName)) {
             await api.post(`/browse/${bucket}/multipart/abort`, {
               body: { key, uploadId },
@@ -148,10 +184,17 @@ export const useMultipartUpload = (
           const formData = new FormData();
           formData.append("file", chunk, fileName);
 
-          console.log(`[multipart] Uploading part ${i + 1}/${totalParts}, size: ${end - start}`);
-          const partRes = await api.put(
-            `/browse/${bucket}/multipart/upload?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${i + 1}`,
-            { body: formData }
+          console.log(
+            `[multipart] Uploading part ${i + 1}/${totalParts}, size: ${end - start}`
+          );
+          const partRes = await fetchWithRetry(
+            () =>
+              api.put(
+                `/browse/${bucket}/multipart/upload?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId!)}&partNumber=${i + 1}`,
+                { body: formData }
+              ),
+            MAX_RETRIES,
+            `UploadPart ${i + 1}/${totalParts}`
           );
           console.log(`[multipart] Part ${i + 1} done, etag:`, partRes.etag);
 
@@ -161,14 +204,31 @@ export const useMultipartUpload = (
         }
 
         // 3. Complete multipart upload
-        await api.post(`/browse/${bucket}/multipart/complete`, {
-          body: { key, uploadId, parts },
-        });
+        console.log("[multipart] Completing upload");
+        await fetchWithRetry(
+          () =>
+            api.post(`/browse/${bucket}/multipart/complete`, {
+              body: { key, uploadId, parts },
+            }),
+          MAX_RETRIES,
+          "CompleteMultipartUpload"
+        );
 
         updateProgress(fileName, { loaded: file.size, status: "completed" });
+        console.log("[multipart] Upload complete!");
         options?.onSuccess?.();
       } catch (err) {
         console.error("[multipart] Upload failed:", err);
+        // Try to abort if we have an uploadId
+        if (uploadId) {
+          try {
+            await api.post(`/browse/${bucket}/multipart/abort`, {
+              body: { key, uploadId },
+            });
+          } catch {
+            // ignore abort errors
+          }
+        }
         updateProgress(fileName, {
           status: "error",
           error: (err as Error).message,
